@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+_to_delete/
+
+# Personal wildcard prompt files -- see the same note in .comfyignore.
+# Remove these two lines if you want them tracked/published.
+Klein_Prompts.txt
+Prompts.txt

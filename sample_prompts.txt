@@ -1,0 +1,20 @@
+[trigger], studio portrait, neutral gray background, soft key light, neutral expression, looking at camera
+close-up headshot, natural window light, gentle smile, shallow depth of field
+[trigger] wearing a casual t-shirt and jeans, standing in a sunlit park, full body shot
+a person wearing a tailored suit, office background, confident posture, three-quarter view
+[trigger], candid laugh, outdoor cafe table, warm afternoon light, medium shot
+a person wearing a cozy knit sweater, sitting by a window, overcast daylight, side profile
+[trigger], gym outfit, mid-stride on a treadmill, bright indoor lighting, action shot
+a person wearing a raincoat, walking down a city street at night, neon signs in background
+[trigger], hiking gear, mountain trail backdrop, golden hour lighting, looking off into the distance
+a person wearing a chef's apron, kitchen setting, focused expression, three-quarter angle
+[trigger], beach outfit, ocean and sand in the background, midday sun, relaxed pose
+a person wearing a winter coat and scarf, snowy street, soft overcast light, front view
+[trigger], library setting, reading a book, warm lamp light, seated pose
+a person wearing formal evening attire, elegant ballroom background, dramatic side lighting
+[trigger], casual hoodie, coffee shop interior, cozy ambient light, three-quarter close-up
+a person wearing a lab coat, laboratory setting, neutral expression, front-facing
+[trigger], cycling gear, city bike path, daytime, dynamic action pose
+a person wearing a denim jacket, graffiti wall background, urban daylight, confident stance
+[trigger], rooftop garden setting, sunset lighting, contemplative expression, full body
+a person wearing business casual attire, modern office lobby, bright even lighting, standing pose

@@ -1,0 +1,13 @@
+# Files excluded from the published Comfy Registry archive (.gitignore-style syntax).
+# This does NOT affect what's in your git repo, only what gets zipped up and
+# uploaded when you run `comfy node publish`.
+
+__pycache__/
+*.pyc
+_to_delete/
+
+# Personal wildcard prompt files -- not part of the node pack itself, and
+# large/personal enough that they probably shouldn't ship in a public release.
+# Remove these two lines if you actually want them included.
+Klein_Prompts.txt
+Prompts.txt
