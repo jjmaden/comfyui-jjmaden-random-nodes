@@ -10,9 +10,6 @@ class MultiInputSamplerSwitch:
     since it's also the fallback for a partially-wired selection.
     """
 
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -46,7 +43,17 @@ class MultiInputSamplerSwitch:
                    "lazy and won't be computed at all. If the selected set (2-5) is missing any "
                    "of its three inputs, this falls back to set_1 for whatever's missing.")
 
+    @staticmethod
+    def _require_valid_select_set(select_set):
+        # The widget only offers 1-5, but a workflow submitted directly via the
+        # ComfyUI API bypasses that -- without this, an out-of-range value used
+        # to silently fall back to set_1 with just a console print.
+        if not (1 <= select_set <= 5):
+            raise ValueError(f"MultiInputSamplerSwitch: select_set={select_set} is out of range "
+                              f"(must be 1-5).")
+
     def check_lazy_status(self, select_set, set_1_pos, set_1_neg, set_1_latent, **kwargs):
+        self._require_valid_select_set(select_set)
         if select_set == 1:
             return []
         prefix = f"set_{select_set}_"
@@ -54,6 +61,7 @@ class MultiInputSamplerSwitch:
         return [name for name in needed if kwargs.get(name) is None]
 
     def switch_inputs(self, select_set, set_1_pos, set_1_neg, set_1_latent, **kwargs):
+        self._require_valid_select_set(select_set)
         if select_set == 1:
             return (set_1_pos, set_1_neg, set_1_latent)
 

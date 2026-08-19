@@ -274,7 +274,8 @@ class MiniMaxH3ResolutionSelector:
 
     def select(self, aspect_ratio, resolution, duration, fps,
                custom_width=0, custom_height=0, reference_image=None):
-        if custom_width > 0 and custom_height > 0:
+        using_custom = custom_width > 0 and custom_height > 0
+        if using_custom:
             w = max(CANVAS_MULTIPLE, round(custom_width / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
             h = max(CANVAS_MULTIPLE, round(custom_height / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         else:
@@ -283,7 +284,9 @@ class MiniMaxH3ResolutionSelector:
                 raise ValueError(f"MiniMaxH3ResolutionSelector: unparseable resolution '{resolution}'")
             w, h = int(m.group(1)), int(m.group(2))
 
-        if reference_image is not None:
+        # custom_width/custom_height are documented (see reference_image's own
+        # tooltip above) to win over reference_image, not the other way around.
+        if reference_image is not None and not using_custom:
             budget_mp = (w * h) / 1_000_000
             h_img, w_img = int(reference_image.shape[1]), int(reference_image.shape[2])
             scales = _exact_ratio_scales(w_img, h_img, budget_mp)
@@ -611,6 +614,9 @@ class MiniMaxH3UnifiedToVideo:
         ref_blocks = []
         keyframes = []
         tag_order = []
+        warnings = []
+        audio_tag_n = 0
+        video_tag_n = 0
 
         # Pictures: first_frame, last_frame, then picture_1..9 (direct sockets
         # for 1-4, the rest only reachable via a `references` bundle), all
@@ -621,7 +627,10 @@ class MiniMaxH3UnifiedToVideo:
             ref_items.append({"type": "image", "data": img})
             tag_order.append(f"<Picture {len(ref_items)}> = first_frame")
         if last_frame is not None:
-            img = _resize(last_frame[:1], width, height, "center")
+            # "disabled" (no crop) to match first_frame and every other resize
+            # in this node -- center-cropping just this one input would lose
+            # edge content that first_frame keeps for the same mismatched-ratio case.
+            img = _resize(last_frame[:1], width, height, "disabled")
             keyframes.append({"resolved_frame_index": frame_count - 1, "latent": video_vae.encode(img)})
             ref_items.append({"type": "image", "data": img})
             tag_order.append(f"<Picture {len(ref_items)}> = last_frame")
@@ -652,6 +661,7 @@ class MiniMaxH3UnifiedToVideo:
                 cw = max(CANVAS_MULTIPLE, round(vw / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
                 ch = max(CANVAS_MULTIPLE, round(vh / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
             frames = _resize(vid, cw, ch, "disabled")
+            orig_frame_count = frames.shape[0]
             if frames.shape[0] > frame_count:
                 frames = frames[:frame_count]
             n = frames.shape[0]
@@ -661,6 +671,10 @@ class MiniMaxH3UnifiedToVideo:
             while n % 17 != 5:
                 n -= 1
             frames = frames[:n]
+            if frames.shape[0] < orig_frame_count:
+                warnings.append(
+                    f"video_{vid_idx + 1}: trimmed from {orig_frame_count} to {frames.shape[0]} frames "
+                    f"to fit the {frame_count}-frame output and H3's frame grid")
             z = video_vae.encode(frames)
 
             vid_audio = video_audios_in[vid_idx] if vid_idx < len(video_audios_in) else None
@@ -670,14 +684,15 @@ class MiniMaxH3UnifiedToVideo:
                     raise ValueError(f"MiniMaxH3UnifiedToVideo: video_audio_{vid_idx + 1} needs audio_vae")
                 audio_latent, ref_audio_t = _encode_ref_audio(audio_vae, vid_audio)
                 ref_items.append({"type": "audio"})
-                tag_order.append(f"<Audio {sum(1 for it in ref_items if it['type'] == 'audio')}> "
-                                  f"= video_audio_{vid_idx + 1}")
+                audio_tag_n += 1
+                tag_order.append(f"<Audio {audio_tag_n}> = video_audio_{vid_idx + 1}")
 
             sample_idx = list(range(0, frames.shape[0], FPS // 2))
             qwen_frames = frames[sample_idx]
             ref_items.append({"type": "video", "data": qwen_frames,
                               "timestamps": [t / 2.0 for t in range(len(sample_idx))]})
-            tag_order.append(f"<Video {sum(1 for it in ref_items if it['type'] == 'video')}> = video_{vid_idx + 1}")
+            video_tag_n += 1
+            tag_order.append(f"<Video {video_tag_n}> = video_{vid_idx + 1}")
             ref_blocks.append({"kind": "video_audio" if ref_audio_t else "video",
                                "latent_t": z.shape[2], "latent_h": ch // 16, "latent_w": cw // 16,
                                "ref_audio_t": ref_audio_t, "latent": z, "audio_latent": audio_latent})
@@ -691,7 +706,8 @@ class MiniMaxH3UnifiedToVideo:
             audio_latent, ref_audio_t = _encode_ref_audio(audio_vae, aud)
             ref_items.append({"type": "audio"})
             ref_blocks.append({"kind": "audio", "ref_audio_t": ref_audio_t, "audio_latent": audio_latent})
-            tag_order.append(f"<Audio {sum(1 for it in ref_items if it['type'] == 'audio')}> = audio_{aud_idx + 1}")
+            audio_tag_n += 1
+            tag_order.append(f"<Audio {audio_tag_n}> = audio_{aud_idx + 1}")
 
         if ref_items:
             tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
@@ -717,6 +733,7 @@ class MiniMaxH3UnifiedToVideo:
             "ref_audio_count": sum(1 for a in audios_in if a is not None)
                                 + sum(1 for a in video_audios_in if a is not None),
             "tag_order": tag_order,
+            "warnings": warnings,
             "frame_count": frame_count,
             "duration_s": duration,
             "fps": fps,
@@ -726,6 +743,8 @@ class MiniMaxH3UnifiedToVideo:
         report = (f"MiniMaxH3UnifiedToVideo (best-effort): {frame_count} frames @ {width}x{height}, "
                  f"{len(tag_order)} tagged reference(s){' [references bundle wired]' if bundle else ''}: "
                  f"{', '.join(tag_order) if tag_order else 'none'}.")
+        if warnings:
+            report += " Warnings: " + "; ".join(warnings) + "."
 
         return (cond, latent, prompt, json.dumps(media_map, ensure_ascii=False), report)
 
@@ -811,6 +830,11 @@ _BACKEND_DEFAULTS = {
     "lmstudio": "http://127.0.0.1:1234",
     "kobold": "http://127.0.0.1:5001",
 }
+
+# Matches MiniMaxH3MultimodalChat.DESCRIPTION's stated "up to 2 pictures + 1
+# video frame" cap -- keeps local-LLM context/latency bounded regardless of
+# how many optional picture sockets are wired.
+MAX_CHAT_PICTURES = 2
 
 
 def _tensor_to_png_b64(image_bt, max_edge=1024):
@@ -982,10 +1006,18 @@ class MiniMaxH3MultimodalChat:
         try:
             picture_labels = [("Picture (first_frame)", first_frame), ("Picture (last_frame)", last_frame)]
             picture_labels += [(f"Picture (picture_{i + 1})", p) for i, p in enumerate(pictures)]
+            # DESCRIPTION promises "up to 2 pictures + 1 video frame" sent to the
+            # local model, to keep context/latency sane -- enforce that here
+            # instead of silently sending every wired picture.
             for label, img in picture_labels:
-                if img is not None:
+                if img is None:
+                    continue
+                if len(images_b64) < MAX_CHAT_PICTURES:
                     images_b64.append(_tensor_to_png_b64(img[:1]))
                     tag_notes.append(f"<Picture {len(images_b64)}> attached this turn = {label}")
+                else:
+                    tag_notes.append(f"{label} attached this turn but not shown to the model "
+                                     f"(limit of {MAX_CHAT_PICTURES} pictures reached)")
             if ref_video_0 is not None:
                 images_b64.append(_tensor_to_png_b64(ref_video_0[:1]))
                 tag_notes.append(f"<Video 1> attached this turn (first frame shown as an image; "
@@ -995,10 +1027,12 @@ class MiniMaxH3MultimodalChat:
 
         audio_notes = [(f"video_audio_{i + 1}", a) for i, a in enumerate(video_audios_in)]
         audio_notes += [(f"audio_{i + 1}", a) for i, a in enumerate(audios_in)]
+        audio_tag_n = 0
         for label, aud in audio_notes:
             if aud is not None:
-                tag_notes.append(f"<Audio> attached this turn = {label} (audio bytes are not sent to the "
-                                 f"local model -- describe it in your message if it matters)")
+                audio_tag_n += 1
+                tag_notes.append(f"<Audio {audio_tag_n}> attached this turn = {label} (audio bytes are not "
+                                 f"sent to the local model -- describe it in your message if it matters)")
 
         context_note = f"Target video duration: {duration:.1f}s."
         if tag_notes:

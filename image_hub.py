@@ -1,8 +1,11 @@
 import os
+import time
 import torch
 import numpy as np
 from PIL import Image, ImageOps
 import folder_paths
+
+from ._file_utils import strip_wrapping as _strip_wrapping
 
 try:
     from server import PromptServer
@@ -14,15 +17,19 @@ except ImportError:
     web = None
 
 
-def _strip_wrapping(s):
-    return (s or "").strip().strip('"').strip("'")
-
-
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 _NO_FILES_SENTINEL = "<no image files found -- add files and click Refresh>"
 
+# Short-lived cache of {base_path: (scanned_at, result)} so placing/pasting
+# several UniversalImageHub nodes at once (each triggering its own scan on
+# creation) doesn't re-walk a large folder once per node within the same
+# few seconds. The explicit "Refresh File List" button bypasses this via
+# force=True, so it's always accurate on demand.
+_scan_cache = {}
+_SCAN_CACHE_TTL = 3.0  # seconds
 
-def _scan_image_files(base_path):
+
+def _scan_image_files(base_path, force=False):
     """Recursively list files under base_path as base_path-relative, forward-slash
     paths, sorted. Prefers recognized image extensions; if none are found, falls
     back to every file (so an unusual extension doesn't just make the dropdown
@@ -33,6 +40,12 @@ def _scan_image_files(base_path):
     if not base_path or not os.path.isdir(base_path):
         return [_NO_FILES_SENTINEL]
 
+    now = time.monotonic()
+    if not force:
+        cached = _scan_cache.get(base_path)
+        if cached is not None and (now - cached[0]) < _SCAN_CACHE_TTL:
+            return cached[1]
+
     matched, all_files = [], []
     for root, _dirs, files in os.walk(base_path):
         for name in files:
@@ -42,7 +55,9 @@ def _scan_image_files(base_path):
                 matched.append(rel)
 
     result = sorted(matched) if matched else sorted(all_files)
-    return result if result else [_NO_FILES_SENTINEL]
+    result = result if result else [_NO_FILES_SENTINEL]
+    _scan_cache[base_path] = (now, result)
+    return result
 
 
 def _base_path_for(folder_type, custom_path):
@@ -100,10 +115,15 @@ if PromptServer is not None and getattr(PromptServer, "instance", None) is not N
         async def _universal_image_hub_files(request):
             folder_type = request.rel_url.query.get("folder_type", "input")
             custom_path = request.rel_url.query.get("custom_path", "")
+            force = request.rel_url.query.get("force", "") in ("1", "true", "yes")
             base_path = _base_path_for(folder_type, custom_path)
-            return web.json_response({"files": _scan_image_files(base_path)})
-    except Exception:
-        pass  # e.g. route already registered by a hot-reload; not fatal either way
+            return web.json_response({"files": _scan_image_files(base_path, force=force)})
+    except Exception as exc:
+        # e.g. route already registered by a hot-reload -- not fatal (the node
+        # still works via its normal INPUT_TYPES scan), but log it since a real
+        # registration failure would otherwise only show up as a silent 404
+        # when the "Refresh File List" button is clicked.
+        print(f"[UniversalImageHub] couldn't register /universal_image_hub/files route: {exc}")
 
 
 class UniversalImageHub:
@@ -132,7 +152,10 @@ class UniversalImageHub:
                    "is scanned fresh whenever ComfyUI rebuilds its node schema (server start / page "
                    "reload); use the \"Refresh File List\" button (web/image_hub.js) to re-scan "
                    "mid-session without either of those, or the \"Paste from Clipboard\" button to "
-                   "upload straight into the input folder and select it automatically.")
+                   "upload straight into the input folder and select it automatically. Scans of a "
+                   "given folder are cached for a few seconds so placing several of these nodes at "
+                   "once doesn't re-walk a large folder repeatedly -- the Refresh button always "
+                   "bypasses that cache.")
 
     @classmethod
     def VALIDATE_INPUTS(cls, folder_type, filename, custom_path=""):
@@ -149,7 +172,14 @@ class UniversalImageHub:
             raise FileNotFoundError(f"UniversalImageHub Error: File does not exist at '{image_path}'")
 
         # Standard ComfyUI Image Loading logic
-        i = Image.open(image_path)
+        try:
+            i = Image.open(image_path)
+        except Exception as exc:
+            raise ValueError(
+                f"UniversalImageHub: '{filename}' doesn't look like a readable image ({exc}). "
+                f"Note: when a folder has no recognized image extensions, the dropdown falls back "
+                f"to listing every file in it -- make sure you picked an actual image."
+            ) from exc
         i = ImageOps.exif_transpose(i)
         img_rgb = i.convert("RGB")
 

@@ -12,9 +12,6 @@ class DualModelDPDTSwitch:
     picked, defeating the point of a switch for a pair of large checkpoints.
     """
 
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {

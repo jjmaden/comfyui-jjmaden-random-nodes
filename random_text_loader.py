@@ -1,9 +1,36 @@
 import os
 import random
 
+from ._file_utils import mtime_or_nan
+from ._file_utils import strip_wrapping as _strip_wrapping
 
-def _strip_wrapping(s):
-    return (s or "").strip().strip('"').strip("'")
+# Cache of {resolved_path: (mtime, lines)} so a large wildcard file isn't
+# re-read and re-split on every single execution -- only when its mtime
+# actually changes (the same signal IS_CHANGED already tracks below).
+_line_cache = {}
+
+
+def _load_lines(path):
+    mtime = mtime_or_nan(path)
+    cached = _line_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f
+                     if line.strip() and not line.strip().startswith('#')]
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"RandomLineFromFile: '{path}' isn't valid UTF-8 text ({exc}). Re-save it as "
+            f"UTF-8 -- a file saved as UTF-16 (a common Notepad default on Windows) or "
+            f"containing stray non-UTF-8 bytes will hit this."
+        ) from exc
+    except OSError as exc:
+        raise ValueError(f"RandomLineFromFile: couldn't read '{path}': {exc}") from exc
+
+    _line_cache[path] = (mtime, lines)
+    return lines
 
 
 class RandomLineFromFile:
@@ -32,7 +59,10 @@ class RandomLineFromFile:
     DESCRIPTION = ("Picks one random line from a text file using its own seed, independent of "
                    "the KSampler's. Uses a private random.Random instance rather than reseeding "
                    "Python's global random module, so it won't affect -- or be affected by -- "
-                   "any other node in the same ComfyUI process that also calls random.*.")
+                   "any other node in the same ComfyUI process that also calls random.*. Blank "
+                   "lines and lines starting with '#' are skipped, so you can comment out entries "
+                   "in your wildcard file. The parsed line list is cached by the file's mtime, so "
+                   "large wildcard files aren't re-read from disk on every single execution.")
 
     @classmethod
     def VALIDATE_INPUTS(cls, text_path, seed, prompt_mode, prompt_fixed_seed, lora_trigger, prefix_text):
@@ -46,8 +76,7 @@ class RandomLineFromFile:
         if not os.path.exists(cleaned_path):
             raise FileNotFoundError(f"RandomLineFromFile: '{cleaned_path}' does not exist.")
 
-        with open(cleaned_path, 'r', encoding='utf-8') as f:
-            lines = [line.strip() for line in f if line.strip()]
+        lines = _load_lines(cleaned_path)
 
         if not lines:
             raise ValueError(f"RandomLineFromFile: '{cleaned_path}' has no non-empty lines.")
@@ -87,10 +116,7 @@ class RandomLineFromFile:
         # line, which fights the exact hand-editing workflow this node's own
         # readme walks users through.
         cleaned_path = _strip_wrapping(text_path)
-        try:
-            mtime = os.path.getmtime(cleaned_path)
-        except OSError:
-            mtime = None  # missing/unreadable; let get_random_line raise the real error
+        mtime = mtime_or_nan(cleaned_path)  # nan (missing/unreadable) lets get_random_line raise the real error
 
         if prompt_mode == "Use Dedicated Prompt Seed":
             return f"{seed}-{prompt_fixed_seed}-{mtime}"  # Tracks both seed states + file content

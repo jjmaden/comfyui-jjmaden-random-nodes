@@ -17,7 +17,7 @@ app.registerExtension({
             // ComfyUI rebuilds this node's schema (server start / page reload), so
             // this button re-runs it on demand mid-session, and folder_type changes
             // trigger it automatically below.
-            async function refreshFileList(alertIfEmpty) {
+            async function refreshFileList(alertIfEmpty, force) {
                 const filenameWidget = node.widgets?.find((w) => w.name === "filename");
                 const folderWidget = node.widgets?.find((w) => w.name === "folder_type");
                 const customPathWidget = node.widgets?.find((w) => w.name === "custom_path");
@@ -26,6 +26,10 @@ app.registerExtension({
                 const folderType = folderWidget?.value ?? "input";
                 const customPath = customPathWidget?.value ?? "";
                 const params = new URLSearchParams({ folder_type: folderType, custom_path: customPath });
+                // The server caches scans for a few seconds so placing several of
+                // these nodes at once doesn't re-walk a large folder repeatedly --
+                // the explicit Refresh button bypasses that to always be current.
+                if (force) params.set("force", "1");
 
                 let files;
                 try {
@@ -64,7 +68,7 @@ app.registerExtension({
                 };
             }
 
-            this.addWidget("button", "🔄 Refresh File List", null, () => refreshFileList(true));
+            this.addWidget("button", "🔄 Refresh File List", null, () => refreshFileList(true, true));
 
             this.addWidget("button", "Paste from Clipboard", null, async () => {
                 let items;

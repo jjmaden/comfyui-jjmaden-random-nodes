@@ -52,16 +52,16 @@ class DynamicImageRouter:
         actual_index = max(0, min(select_path - 1, self.NUM_PATHS - 1))
 
         if _HAS_EXECUTION_BLOCKER:
-            blocked = ExecutionBlocker(None)  # silently block anything wired to this output
+            # Sharing one ExecutionBlocker instance across slots is fine -- it
+            # blocks downstream execution outright, there's no tensor to alias.
+            outputs = [ExecutionBlocker(None) for _ in range(self.NUM_PATHS)]
         else:
             # Fallback for older ComfyUI without ExecutionBlocker: a genuinely
-            # empty batch (0 images, 64x64 so any node that still needs H/W
-            # doesn't divide by zero). Downstream nodes that loop over the
-            # batch (PreviewImage, SaveImage, VAEEncode) handle this fine;
-            # anything that indexes with image[0] instead of image[:1] will
-            # still raise on an unselected path.
-            blocked = torch.empty((0, 64, 64, 3), dtype=torch.float32)
+            # empty batch per slot (0 images, 64x64 so any node that still needs
+            # H/W doesn't divide by zero). Separate tensor instances -- sharing
+            # one would mean an in-place write on one unselected branch's tensor
+            # is visible on every other unselected branch too.
+            outputs = [torch.empty((0, 64, 64, 3), dtype=torch.float32) for _ in range(self.NUM_PATHS)]
 
-        outputs = [blocked] * self.NUM_PATHS
         outputs[actual_index] = images
         return tuple(outputs)

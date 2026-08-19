@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-jjmaden-random-nodes"
 description = "A grab-bag of ComfyUI custom nodes: workflow-control utilities (lazy image routing, a searchable image loader, model/sampler switches, an LTX-safe latent resizer, a wildcard prompt-file loader) plus 5 best-effort MiniMax H3 companion nodes reconstructed to fill gaps left by node types with no public source."
-version = "1.0.0"
+version = "1.1.0"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = []
