@@ -1,3 +1,4 @@
+import io
 import os
 import time
 import torch
@@ -118,6 +119,33 @@ if PromptServer is not None and getattr(PromptServer, "instance", None) is not N
             force = request.rel_url.query.get("force", "") in ("1", "true", "yes")
             base_path = _base_path_for(folder_type, custom_path)
             return web.json_response({"files": _scan_image_files(base_path, force=force)})
+
+        # Backs the preview thumbnail shown under the filename dropdown in
+        # web/image_hub.js. Always re-reads the file (Cache-Control: no-store)
+        # so editing/replacing it on disk is reflected without a manual
+        # re-queue -- consistent with how IS_CHANGED already tracks mtime for
+        # the node's real (non-preview) output.
+        @PromptServer.instance.routes.get("/universal_image_hub/thumbnail")
+        async def _universal_image_hub_thumbnail(request):
+            folder_type = request.rel_url.query.get("folder_type", "input")
+            custom_path = request.rel_url.query.get("custom_path", "")
+            filename = request.rel_url.query.get("filename", "")
+            try:
+                image_path = _resolve_path(folder_type, filename, custom_path)
+            except ValueError as exc:
+                return web.Response(status=400, text=str(exc))
+            if not os.path.exists(image_path):
+                return web.Response(status=404, text=f"'{filename}' does not exist")
+            try:
+                with Image.open(image_path) as im:
+                    im = ImageOps.exif_transpose(im)
+                    im.thumbnail((320, 320), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    im.convert("RGB").save(buf, format="JPEG", quality=82)
+            except Exception as exc:
+                return web.Response(status=415, text=f"couldn't render a preview for '{filename}': {exc}")
+            return web.Response(body=buf.getvalue(), content_type="image/jpeg",
+                                 headers={"Cache-Control": "no-store"})
     except Exception as exc:
         # e.g. route already registered by a hot-reload -- not fatal (the node
         # still works via its normal INPUT_TYPES scan), but log it since a real
@@ -155,7 +183,8 @@ class UniversalImageHub:
                    "upload straight into the input folder and select it automatically. Scans of a "
                    "given folder are cached for a few seconds so placing several of these nodes at "
                    "once doesn't re-walk a large folder repeatedly -- the Refresh button always "
-                   "bypasses that cache.")
+                   "bypasses that cache. Shows a thumbnail preview of the selected file under the "
+                   "dropdown, updated whenever the selection changes.")
 
     @classmethod
     def VALIDATE_INPUTS(cls, folder_type, filename, custom_path=""):

@@ -69,6 +69,8 @@ Loads a single image (plus its mask) from a searchable dropdown, the same way Co
 
 **Paste from Clipboard button:** reads an image off your system clipboard, uploads it to ComfyUI's `input` folder via `/upload/image`, and both adds it to the `filename` dropdown and selects it (forcing `folder_type` to `input`). Requires a secure context (HTTPS or localhost) and clipboard permission in your browser.
 
+**Thumbnail preview:** a small image preview appears under the `filename` dropdown, showing the currently-selected file (via a server-resized JPEG served from `/universal_image_hub/thumbnail` — display only, not what's actually loaded for the IMAGE/MASK output). It updates whenever `filename`, `folder_type`, or `custom_path` changes, including after a Refresh or a clipboard paste. Always re-reads the file from disk (no caching), so replacing a file on disk under the same name updates the preview on next selection.
+
 ⚠️ **Migration note:** `filename` changed from a free-typed STRING to a COMBO dropdown. An existing saved workflow's stored filename value should still load and run correctly even if it's not in the freshly-scanned list, but to pick a *different* file from the dropdown, click "🔄 Refresh File List" first if the one you want isn't showing yet (e.g. it was added after your last ComfyUI restart/page reload).
 
 **Practical use case:** pulling in a reference image you've just copied (from a browser, screenshot tool, or another app) without saving it to disk yourself first, or browsing/picking images out of `input`, `output`, or any other folder on disk without retyping paths.

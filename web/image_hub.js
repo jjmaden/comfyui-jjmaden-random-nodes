@@ -11,6 +11,35 @@ app.registerExtension({
 
             const node = this;
 
+            // Thumbnail preview shown under the filename dropdown, backed by
+            // /universal_image_hub/thumbnail (a small server-resized JPEG --
+            // not used for the node's actual IMAGE/MASK output, just display).
+            const previewImg = document.createElement("img");
+            previewImg.style.cssText = "width:100%; height:160px; object-fit:contain; " +
+                "display:none; background:#111; border-radius:4px; border:1px solid #333;";
+            previewImg.alt = "preview";
+            previewImg.onerror = () => { previewImg.style.display = "none"; };
+            const previewWrap = document.createElement("div");
+            previewWrap.style.cssText = "width:100%;";
+            previewWrap.appendChild(previewImg);
+            node.addDOMWidget("image_preview", "preview", previewWrap, { serialize: false });
+
+            function updatePreview() {
+                const filenameWidget = node.widgets?.find((w) => w.name === "filename");
+                const folderWidget = node.widgets?.find((w) => w.name === "folder_type");
+                const customPathWidget = node.widgets?.find((w) => w.name === "custom_path");
+                const filename = filenameWidget?.value;
+                if (!filename || filename.startsWith("<no image files")) {
+                    previewImg.style.display = "none";
+                    return;
+                }
+                const folderType = folderWidget?.value ?? "input";
+                const customPath = customPathWidget?.value ?? "";
+                const params = new URLSearchParams({ folder_type: folderType, custom_path: customPath, filename });
+                previewImg.style.display = "";
+                previewImg.src = `/universal_image_hub/thumbnail?${params}`;
+            }
+
             // `filename` is now a searchable COMBO widget (same UX as the checkpoint/
             // LoRA loaders -- click to open, type to filter), backed by a directory
             // scan done server-side in image_hub.py. That scan only happens when
@@ -52,6 +81,7 @@ app.registerExtension({
                 if (!files.includes(filenameWidget.value)) {
                     filenameWidget.value = files[0];
                 }
+                updatePreview();
                 node.graph?.setDirtyCanvas(true, true);
             }
 
@@ -64,6 +94,19 @@ app.registerExtension({
                 folderWidget.callback = function (...args) {
                     const ret = origCallback?.apply(this, args);
                     refreshFileList(false);
+                    return ret;
+                };
+            }
+
+            // Update the preview whenever the user picks a different file from
+            // the dropdown directly (refreshFileList already covers the cases
+            // where filename's value is changed programmatically).
+            const filenameWidgetForPreview = this.widgets?.find((w) => w.name === "filename");
+            if (filenameWidgetForPreview) {
+                const origFilenameCallback = filenameWidgetForPreview.callback;
+                filenameWidgetForPreview.callback = function (...args) {
+                    const ret = origFilenameCallback?.apply(this, args);
+                    updatePreview();
                     return ret;
                 };
             }
@@ -114,6 +157,7 @@ app.registerExtension({
                             }
                             filenameWidget.value = savedName;
                         }
+                        updatePreview();
                         this.graph?.setDirtyCanvas(true, true);
 
                         alert(`Pasted as "${savedName}" and selected it in filename (folder_type: input).`);
