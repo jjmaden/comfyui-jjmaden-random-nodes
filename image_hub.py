@@ -21,44 +21,135 @@ except ImportError:
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 _NO_FILES_SENTINEL = "<no image files found -- add files and click Refresh>"
 
-# Short-lived cache of {base_path: (scanned_at, result)} so placing/pasting
-# several UniversalImageHub nodes at once (each triggering its own scan on
-# creation) doesn't re-walk a large folder once per node within the same
+# Kept as exact string literals (not shared constants) with web/image_hub.js's
+# "Sort By" combo, same as _NO_FILES_SENTINEL above -- there's no mechanism in
+# this pack to share a Python constant with the JS extension.
+_SORT_NAME = "Name (A-Z)"
+_SORT_NEWEST = "Newest First"
+_SORT_OPTIONS = [_SORT_NAME, _SORT_NEWEST]
+
+# Short-lived cache of {(base_path, sort_by): (scanned_at, result)} so placing/
+# pasting several UniversalImageHub nodes at once (each triggering its own scan
+# on creation) doesn't re-walk a large folder once per node within the same
 # few seconds. The explicit "Refresh File List" button bypasses this via
 # force=True, so it's always accurate on demand.
 _scan_cache = {}
 _SCAN_CACHE_TTL = 3.0  # seconds
 
 
-def _scan_image_files(base_path, force=False):
+def _scan_image_files(base_path, force=False, sort_by=_SORT_NAME):
     """Recursively list files under base_path as base_path-relative, forward-slash
-    paths, sorted. Prefers recognized image extensions; if none are found, falls
-    back to every file (so an unusual extension doesn't just make the dropdown
-    mysteriously empty). Returns a single sentinel entry if base_path doesn't
-    exist or truly has nothing in it, since a COMBO widget can't have zero
-    choices -- `_resolve_path` recognizes and rejects that sentinel with a
-    clear error rather than trying to load a file literally named that."""
+    paths. Prefers recognized image extensions; if none are found, falls back to
+    every file (so an unusual extension doesn't just make the dropdown mysteriously
+    empty). `sort_by` picks alphabetical (default) or newest-file-first ordering.
+    Returns a single sentinel entry if base_path doesn't exist or truly has nothing
+    in it, since a COMBO widget can't have zero choices -- `_resolve_path` recognizes
+    and rejects that sentinel with a clear error rather than trying to load a file
+    literally named that."""
     if not base_path or not os.path.isdir(base_path):
         return [_NO_FILES_SENTINEL]
+    if sort_by not in _SORT_OPTIONS:
+        sort_by = _SORT_NAME
 
+    cache_key = (base_path, sort_by)
     now = time.monotonic()
     if not force:
-        cached = _scan_cache.get(base_path)
+        cached = _scan_cache.get(cache_key)
         if cached is not None and (now - cached[0]) < _SCAN_CACHE_TTL:
             return cached[1]
 
-    matched, all_files = [], []
+    matched, all_files = [], []  # each entry: (relative_path, absolute_path)
     for root, _dirs, files in os.walk(base_path):
         for name in files:
-            rel = os.path.relpath(os.path.join(root, name), base_path).replace(os.sep, "/")
-            all_files.append(rel)
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, base_path).replace(os.sep, "/")
+            all_files.append((rel, full))
             if os.path.splitext(name)[1].lower() in _IMAGE_EXTENSIONS:
-                matched.append(rel)
+                matched.append((rel, full))
 
-    result = sorted(matched) if matched else sorted(all_files)
+    candidates = matched if matched else all_files
+    if sort_by == _SORT_NEWEST:
+        def _mtime(entry):
+            try:
+                return os.path.getmtime(entry[1])
+            except OSError:
+                return 0.0
+        candidates = sorted(candidates, key=_mtime, reverse=True)
+    else:
+        candidates = sorted(candidates, key=lambda entry: entry[0])
+
+    result = [rel for rel, _full in candidates]
     result = result if result else [_NO_FILES_SENTINEL]
-    _scan_cache[base_path] = (now, result)
+    _scan_cache[cache_key] = (now, result)
     return result
+
+
+def _parse_crop_rect(crop_rect):
+    """Parses the hidden crop_rect widget's "x,y,w,h" normalized-(0-1) string
+    (set by web/image_hub.js's interactive crop overlay -- see the credit note
+    on that file) into a clamped (x, y, w, h) tuple, or None if empty/invalid/
+    zero-area. Never raises: a corrupt value just means "no crop", matching
+    the widget's own empty-string default for images that haven't been
+    cropped yet."""
+    if not crop_rect:
+        return None
+    try:
+        x, y, w, h = (float(p) for p in crop_rect.split(","))
+    except (TypeError, ValueError):
+        return None
+    x = min(max(x, 0.0), 1.0)
+    y = min(max(y, 0.0), 1.0)
+    w = min(max(w, 0.0), 1.0 - x)
+    h = min(max(h, 0.0), 1.0 - y)
+    if w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+
+def _apply_crop_and_resize(img, crop_rect, max_megapixels, force_width, force_height):
+    """Applies the interactive crop rectangle (if any), then either forces an
+    exact output size (center-cropping first if the aspect ratio differs from
+    the crop's own, then up/downscaling to fit exactly) or caps the result to
+    max_megapixels by downscaling only -- never upscaling -- if it's over that
+    cap. force_width/force_height (both needed, both non-zero) take priority
+    over max_megapixels, matching web/image_hub.js's credited inspiration.
+    Operates on (and may return a different) PIL Image; a fully-disabled call
+    (no crop, no cap, no forced size) returns img unchanged."""
+    rect = _parse_crop_rect(crop_rect)
+    if rect is not None:
+        x, y, w, h = rect
+        width, height = img.size
+        left = round(x * width)
+        top = round(y * height)
+        right = min(width, round((x + w) * width))
+        bottom = min(height, round((y + h) * height))
+        if right > left and bottom > top:
+            img = img.crop((left, top, right, bottom))
+
+    if force_width and force_height:
+        width, height = img.size
+        target_aspect = force_width / force_height
+        current_aspect = width / height
+        if abs(current_aspect - target_aspect) > 1e-6:
+            if current_aspect > target_aspect:
+                new_width = max(1, round(height * target_aspect))
+                left = (width - new_width) // 2
+                img = img.crop((left, 0, left + new_width, height))
+            else:
+                new_height = max(1, round(width / target_aspect))
+                top = (height - new_height) // 2
+                img = img.crop((0, top, width, top + new_height))
+        img = img.resize((force_width, force_height), Image.LANCZOS)
+    elif max_megapixels and max_megapixels > 0:
+        width, height = img.size
+        current_mp = (width * height) / 1_000_000
+        if current_mp > max_megapixels:
+            scale = (max_megapixels / current_mp) ** 0.5
+            new_width = max(1, round(width * scale))
+            new_height = max(1, round(height * scale))
+            img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    return img
 
 
 def _base_path_for(folder_type, custom_path):
@@ -117,8 +208,9 @@ if PromptServer is not None and getattr(PromptServer, "instance", None) is not N
             folder_type = request.rel_url.query.get("folder_type", "input")
             custom_path = request.rel_url.query.get("custom_path", "")
             force = request.rel_url.query.get("force", "") in ("1", "true", "yes")
+            sort_by = request.rel_url.query.get("sort_by", _SORT_NAME)
             base_path = _base_path_for(folder_type, custom_path)
-            return web.json_response({"files": _scan_image_files(base_path, force=force)})
+            return web.json_response({"files": _scan_image_files(base_path, force=force, sort_by=sort_by)})
 
         # Backs the preview thumbnail shown under the filename dropdown in
         # web/image_hub.js. Always re-reads the file (Cache-Control: no-store)
@@ -139,13 +231,15 @@ if PromptServer is not None and getattr(PromptServer, "instance", None) is not N
             try:
                 with Image.open(image_path) as im:
                     im = ImageOps.exif_transpose(im)
+                    orig_w, orig_h = im.size  # post-transpose, matching what load_it's own tensor will be
                     im.thumbnail((320, 320), Image.LANCZOS)
                     buf = io.BytesIO()
                     im.convert("RGB").save(buf, format="JPEG", quality=82)
             except Exception as exc:
                 return web.Response(status=415, text=f"couldn't render a preview for '{filename}': {exc}")
             return web.Response(body=buf.getvalue(), content_type="image/jpeg",
-                                 headers={"Cache-Control": "no-store"})
+                                 headers={"Cache-Control": "no-store",
+                                          "X-Image-Width": str(orig_w), "X-Image-Height": str(orig_h)})
     except Exception as exc:
         # e.g. route already registered by a hot-reload -- not fatal (the node
         # still works via its normal INPUT_TYPES scan), but log it since a real
@@ -168,6 +262,25 @@ class UniversalImageHub:
             },
             "optional": {
                 "custom_path": ("STRING", {"default": ""}),
+                # Interactive-crop rectangle, set by web/image_hub.js's canvas
+                # overlay on the thumbnail preview -- not meant to be typed by
+                # hand. "x,y,w,h" normalized to the ORIGINAL image's own
+                # dimensions (0-1), empty string = no crop. See the credit
+                # note in web/image_hub.js for where this UI idea came from.
+                "crop_rect": ("STRING", {"default": "", "multiline": False}),
+                "max_megapixels": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 64.0, "step": 0.05,
+                    "tooltip": "Downscale-only cap on the (possibly cropped) output, in megapixels "
+                               "(1.0 = 1024x1024). 0 disables it. Ignored when force_width and "
+                               "force_height are both set."}),
+                "force_width": ("INT", {
+                    "default": 0, "min": 0, "max": 8192, "step": 8,
+                    "tooltip": "Together with force_height, forces an exact output size, "
+                               "center-cropping first if the aspect ratio differs, then "
+                               "up/downscaling to fit exactly. 0 disables it."}),
+                "force_height": ("INT", {
+                    "default": 0, "min": 0, "max": 8192, "step": 8,
+                    "tooltip": "See force_width."}),
             }
         }
 
@@ -184,7 +297,14 @@ class UniversalImageHub:
                    "given folder are cached for a few seconds so placing several of these nodes at "
                    "once doesn't re-walk a large folder repeatedly -- the Refresh button always "
                    "bypasses that cache. Shows a thumbnail preview of the selected file under the "
-                   "dropdown, updated whenever the selection changes.")
+                   "dropdown, updated whenever the selection changes, with a draggable crop rectangle "
+                   "on it (draw/move/resize/click-outside-to-clear) whose normalized coordinates are "
+                   "applied to the full-resolution image at load time -- idea credited to noEmbryo's "
+                   "ComfyUI-noEmbryo pack, see readme.md. A 'Sort By' widget (web/image_hub.js) lets "
+                   "the dropdown list alphabetically or newest-file-first. max_megapixels caps the "
+                   "(cropped) output size by downscaling only; force_width/force_height together force "
+                   "an exact output size instead, center-cropping first if needed, and take priority "
+                   "over max_megapixels.")
 
     @classmethod
     def VALIDATE_INPUTS(cls, folder_type, filename, custom_path=""):
@@ -194,7 +314,8 @@ class UniversalImageHub:
             return str(exc)
         return True
 
-    def load_it(self, folder_type, filename, custom_path=""):
+    def load_it(self, folder_type, filename, custom_path="", crop_rect="",
+                max_megapixels=0.0, force_width=0, force_height=0):
         image_path = _resolve_path(folder_type, filename, custom_path)
 
         if not os.path.exists(image_path):
@@ -210,6 +331,7 @@ class UniversalImageHub:
                 f"to listing every file in it -- make sure you picked an actual image."
             ) from exc
         i = ImageOps.exif_transpose(i)
+        i = _apply_crop_and_resize(i, crop_rect, max_megapixels, force_width, force_height)
         img_rgb = i.convert("RGB")
 
         # Convert to ComfyUI standard float32 tensor [B, H, W, C]
