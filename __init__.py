@@ -4,6 +4,7 @@ from .model_switches import DualModelDPDTSwitch
 from .multi_input_sampler_switch import MultiInputSamplerSwitch
 from .image_hub import UniversalImageHub
 from .ltx_latent_resizer import LTXLatentResizer
+from .power_lora_hooks import PowerLoraHooks
 from .random_text_loader import RandomLineFromFile  # <-- 1. Import your new wildcard node
 from .minimax_h3_extra_nodes import (
     MiniMaxH3UnifiedToVideo,
@@ -20,6 +21,7 @@ NODE_CLASS_MAPPINGS = {
     "MultiInputSamplerSwitch": MultiInputSamplerSwitch,
     "UniversalImageHub": UniversalImageHub,
     "LTXLatentResizer": LTXLatentResizer,
+    "PowerLoraHooks": PowerLoraHooks,
     "RandomLineFromFile": RandomLineFromFile,  # <-- 2. Register the mapping ID
     # Best-effort MiniMax H3 nodes -- see minimax_h3_extra_nodes.py's
     # module docstring for what's genuinely real vs. reverse-engineered here.
@@ -37,6 +39,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MultiInputSamplerSwitch": "Sampler Switch",
     "UniversalImageHub": "Image Hub",
     "LTXLatentResizer": "LTX Latent Resizer (Divisible by 32)",
+    "PowerLoraHooks": "Power Lora Hooks (fixed slots)",
     "RandomLineFromFile": "Random Line From File (Wildcard)",  # <-- 3. Register the menu label
     "MiniMaxH3UnifiedToVideo": "MiniMax H3 Unified To Video (best-effort)",
     "MiniMaxH3ConcatAVLatent": "MiniMax H3 Concat AV Latent (best-effort)",

@@ -1,6 +1,6 @@
 # ComfyUI_My_Custom_Nodes
 
-A personal collection of 11 ComfyUI custom nodes: 6 general-purpose workflow utilities, plus 5 nodes that fill in gaps around a third-party MiniMax H3 video workflow that referenced node types with no public source.
+A personal collection of 12 ComfyUI custom nodes: 7 general-purpose workflow utilities, plus 5 nodes that fill in gaps around a third-party MiniMax H3 video workflow that referenced node types with no public source.
 
 ## Table of Contents
 
@@ -11,6 +11,7 @@ A personal collection of 11 ComfyUI custom nodes: 6 general-purpose workflow uti
   - [Model Switch (DualModelDPDTSwitch)](#model-switch-dualmodeldpdtswitch)
   - [Sampler Switch (MultiInputSamplerSwitch)](#sampler-switch-multiinputsamplerswitch)
   - [LTX Latent Resizer](#ltx-latent-resizer)
+  - [Power Lora Hooks](#power-lora-hooks)
   - [Random Line From File (Wildcard)](#random-line-from-file-wildcard)
 - [MiniMax H3 Nodes](#minimax-h3-nodes)
   - [MiniMax H3 Resolution Selector](#minimax-h3-resolution-selector)
@@ -124,6 +125,22 @@ Despite the name, this resizes pixel-space `IMAGE` tensors (not `LATENT` tensors
 `video_preset` additionally trims the batch (frame) dimension down to the nearest valid frame count for the chosen video model's causal VAE — each family has its own "count % multiple == remainder" constraint (LTX-Video needs `8k+1`; Hunyuan Video and WAN 2.1/2.2 both need `4k+1`). This only ever **trims** frames from the end, never pads/duplicates them, since there's no way to invent frames that don't exist — if you need a specific count, feed in at least that many frames before this node. `Custom` lets you supply your own multiple/remainder for a model not in the list. The default, `none (spatial resize only)`, leaves the frame count untouched — this is the node's original, pre-existing behavior.
 
 **Practical use case:** taking an arbitrary-resolution (and, optionally, arbitrary-length) input image/video batch and getting it to a VAE-safe resolution and frame count for your target model in one step, with an adjustable scale factor for quick "generate at 0.5×, upscale later" style workflows.
+
+### Power Lora Hooks
+
+**Category:** `advanced/hooks/create` · **File:** `power_lora_hooks.py`
+
+Stacks up to 8 LoRAs into one `HOOKS` output, and optionally applies those hooks to `positive`/`negative` conditioning. A fixed-slot alternative to chaining multiple `LoraLoader` nodes — and, unlike `LoraLoader`, it never patches `MODEL`/`CLIP` directly at all.
+
+**Inputs (all optional):** `prev_hooks` (HOOKS — hooks from an upstream hook-creating node, combined with this node's own enabled slots; same chaining convention as ComfyUI's native `Create Hook LoRA`/`Create Hook Model as LoRA`, so multiple `Power Lora Hooks` nodes can be chained if you need more than 8 LoRAs). `positive`/`negative` (CONDITIONING — if connected, get the accumulated hooks applied and are passed through; if not connected, that output is blocked). Per slot (`lora_1` through `lora_8`): `lora_N_enabled` (BOOLEAN, default on), `lora_N` (combo, default `None`), `lora_N_strength_model` / `lora_N_strength_clip` (FLOAT, default `1.0`, range -20 to 20).
+
+**Outputs:** `hooks` (HOOKS — always produced, even if nothing is enabled, so it can feed other hook-consuming nodes like `Set CLIP Hooks`), `positive`/`negative` (CONDITIONING).
+
+**Behavior:** A slot contributes nothing (no disk read, no hook created) if it's disabled, its lora is `None`, or both its strengths are `0` — same skip conditions rgthree-comfy's Power Lora Loader uses. Each enabled slot's lora file is loaded via `comfy.utils.load_torch_file` and turned into a hook via `comfy.hooks.create_hook_lora`, then folded into the running `HookGroup` via `clone_and_combine` — this is the direct hook-API equivalent of `LoraLoader().load_lora(...)`, just producing a hook instead of a patched model/clip. Loaded lora files are cached per node instance (keyed by absolute path), so re-queuing after changing only one slot's strength doesn't re-read every other slot's file from disk. If `positive`/`negative` is connected, `comfy.hooks.set_hooks_for_conditioning` applies the hooks to it *additively* — if that conditioning already carries hooks from somewhere else, both sets combine rather than one replacing the other. **You don't need a separate "apply hooks to model" step**: ComfyUI's own sampler (`comfy/samplers.py`'s `calc_cond_batch`) automatically detects hooks on each conditioning and resolves the matching model patches at sample time — which also means `positive` and `negative` can each carry a *different* set of LoRAs in the same sampling run, something plain `MODEL`/`CLIP` patching can't do without loading the model twice. Marked `EXPERIMENTAL` because it's built directly on ComfyUI's own `EXPERIMENTAL`-flagged hooks API (`comfy/hooks.py`, `comfy_extras/nodes_hooks.py`).
+
+*Idea (a compact node stacking several LoRAs with per-row enable/strength) credited to [rgthree-comfy](https://github.com/rgthree/rgthree-comfy)'s "Power Lora Loader". This node is an independent implementation: it's built around ComfyUI's native hooks API rather than that node's direct `MODEL`/`CLIP` patching, and uses a fixed number of plain widget-based slots rather than that node's fully dynamic, custom-canvas-drawn add/remove rows (see that project for the more polished dynamic-row UX, if you need more or fewer than 8 loras at a glance).*
+
+**Practical use case:** applying a different stack of LoRAs to your positive vs. negative prompt in one sampling pass (e.g. a style LoRA only on the positive side), or building a reusable `HOOKS` bundle to feed into `Set CLIP Hooks` or other hook-based nodes without committing to a patched `MODEL`/`CLIP` up front.
 
 ### Random Line From File (Wildcard)
 
