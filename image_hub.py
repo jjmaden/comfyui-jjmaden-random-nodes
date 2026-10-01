@@ -307,7 +307,8 @@ class UniversalImageHub:
                    "over max_megapixels.")
 
     @classmethod
-    def VALIDATE_INPUTS(cls, folder_type, filename, custom_path=""):
+    def VALIDATE_INPUTS(cls, folder_type, filename, custom_path="", crop_rect="",
+                    max_megapixels=0.0, force_width=0, force_height=0):
         try:
             _resolve_path(folder_type, filename, custom_path)
         except ValueError as exc:
@@ -352,8 +353,9 @@ class UniversalImageHub:
         return (image_tensor, mask_tensor)
 
     @classmethod
-    def IS_CHANGED(s, folder_type, filename, custom_path=""):
-        # Tells ComfyUI to re-run the node if the file's modification time changes
+    def IS_CHANGED(s, folder_type, filename, custom_path="", crop_rect="",
+               max_megapixels=0.0, force_width=0, force_height=0):
+    # Tells ComfyUI to re-run the node if the file's modification time changes
         try:
             image_path = _resolve_path(folder_type, filename, custom_path)
         except ValueError:
