@@ -9,6 +9,8 @@ import { app } from "../../../scripts/app.js";
 // below are our own implementation, not copied from that project's source.
 const HANDLE_PX = 10;     // corner-handle hit-test radius, in canvas px
 const CLICK_SLOP_PX = 3;  // max mouse movement to still count as a plain click
+const DEFAULT_PREVIEW_HEIGHT = 160; // initial AND minimum total height of the preview+caption area, in px
+const DIMS_LABEL_HEIGHT = 18;       // reserved height for the "WxH" caption row below the image
 
 function computeContainRect(boxW, boxH, imgW, imgH) {
     // Mirrors CSS `object-fit: contain`: the {x,y,w,h} sub-rectangle (in
@@ -77,7 +79,7 @@ app.registerExtension({
             // dimensions, not the downscaled thumbnail's -- can be read for
             // the caption and for the crop overlay's coordinate math.
             const previewImg = document.createElement("img");
-            previewImg.style.cssText = "display:block; width:100%; height:160px; object-fit:contain; " +
+            previewImg.style.cssText = "display:block; width:100%; height:100%; object-fit:contain; " +
                 "background:#111; border-radius:4px; border:1px solid #333;";
             previewImg.alt = "preview";
             previewImg.onerror = () => { previewBox.style.display = "none"; };
@@ -88,10 +90,16 @@ app.registerExtension({
             // captures drag events and draws the rectangle/handles.
             const cropCanvas = document.createElement("canvas");
             cropCanvas.style.cssText = "display:block; position:absolute; top:0; left:0; " +
-                "width:100%; height:160px; cursor:crosshair;";
+                "width:100%; height:100%; cursor:crosshair;";
 
+            // previewBox's own height is set imperatively (see
+            // previewTotalHeight/applyPreviewHeight-style logic below) rather
+            // than fixed in CSS, so it can grow when the node itself is
+            // resized bigger -- previewImg/cropCanvas just track it via
+            // height:100%.
             const previewBox = document.createElement("div");
-            previewBox.style.cssText = "position:relative; width:100%; height:160px; display:none;";
+            previewBox.style.cssText = "position:relative; width:100%; display:none;";
+            previewBox.style.height = (DEFAULT_PREVIEW_HEIGHT - DIMS_LABEL_HEIGHT) + "px";
             previewBox.appendChild(previewImg);
             previewBox.appendChild(cropCanvas);
 
@@ -112,6 +120,7 @@ app.registerExtension({
             let origHeight = null;
             let lastPreviewFilename = node.widgets?.find((w) => w.name === "filename")?.value ?? null;
             let dragState = null;
+            let previewTotalHeight = DEFAULT_PREVIEW_HEIGHT;
 
             function getCropWidget() {
                 return node.widgets?.find((w) => w.name === "crop_rect");
@@ -417,7 +426,59 @@ app.registerExtension({
                 serialize: false,
             });
 
-            node.addDOMWidget("image_preview", "preview", previewWrap, { serialize: false });
+            // getMinHeight/getMaxHeight/getHeight are read fresh on every
+            // layout pass (ComfyUI's DOMWidget.computeLayoutSize calls them,
+            // not just once at creation), so returning previewTotalHeight
+            // here is what actually lets the preview grow when the node is
+            // resized -- see the onResize hook below, which is what updates
+            // previewTotalHeight and keeps LiteGraph's own size bookkeeping
+            // in sync. Pattern confirmed against a real working example:
+            // comfyui-kjnodes/web/js/hdr_preview.js.
+            const previewWidget = node.addDOMWidget("image_preview", "preview", previewWrap, {
+                serialize: false,
+                getMinHeight: () => previewTotalHeight,
+                getMaxHeight: () => previewTotalHeight,
+                getHeight: () => previewTotalHeight,
+            });
+            node.resizable = true;
+
+            // LiteGraph's own computeSize ignores DOM widgets, so the node's
+            // real total height has to be reconstructed by hand from its
+            // other (native) widgets' own heights plus whatever's reserved
+            // for the preview -- summed per-widget (via each widget's own
+            // computeSize) rather than assumed-uniform, since crop_rect's
+            // computeSize collapses it to near-zero height above.
+            const ROW_H = LiteGraph?.NODE_WIDGET_HEIGHT ?? 20;
+            const TITLE_H = LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
+            function otherWidgetsHeight(width) {
+                let total = 0;
+                for (const w of node.widgets || []) {
+                    if (w === previewWidget) continue;
+                    const h = w.computeSize ? w.computeSize(width)[1] : ROW_H;
+                    total += Math.max(0, h) + 4;
+                }
+                return total;
+            }
+            function computeNodeHeight() {
+                return TITLE_H + otherWidgetsHeight(node.size[0]) + previewTotalHeight + 8;
+            }
+
+            let resizingPreview = false;
+            const origOnResize = node.onResize;
+            node.onResize = function (size) {
+                origOnResize?.apply(this, arguments);
+                if (resizingPreview) return;
+                resizingPreview = true;
+                try {
+                    const available = size[1] - TITLE_H - otherWidgetsHeight(size[0]) - 8;
+                    previewTotalHeight = Math.max(DEFAULT_PREVIEW_HEIGHT, available);
+                    previewBox.style.height = Math.max(40, previewTotalHeight - DIMS_LABEL_HEIGHT) + "px";
+                    node.setSize([size[0], computeNodeHeight()]);
+                    node.graph?.setDirtyCanvas(true, true);
+                } finally {
+                    resizingPreview = false;
+                }
+            };
 
             // crop_rect IS a real Python input (image_hub.py applies it at load
             // time), but it's driven entirely by dragging on the preview above,
