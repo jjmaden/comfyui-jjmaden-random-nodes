@@ -9,8 +9,7 @@ import { app } from "../../../scripts/app.js";
 // below are our own implementation, not copied from that project's source.
 const HANDLE_PX = 10;     // corner-handle hit-test radius, in canvas px
 const CLICK_SLOP_PX = 3;  // max mouse movement to still count as a plain click
-const DEFAULT_PREVIEW_HEIGHT = 160; // initial AND minimum total height of the preview+caption area, in px
-const DIMS_LABEL_HEIGHT = 18;       // reserved height for the "WxH" caption row below the image
+const DEFAULT_PREVIEW_HEIGHT = 160; // minimum total height of the preview+caption area, in px
 
 function computeContainRect(boxW, boxH, imgW, imgH) {
     // Mirrors CSS `object-fit: contain`: the {x,y,w,h} sub-rectangle (in
@@ -92,14 +91,18 @@ app.registerExtension({
             cropCanvas.style.cssText = "display:block; position:absolute; top:0; left:0; " +
                 "width:100%; height:100%; cursor:crosshair;";
 
-            // previewBox's own height is set imperatively (see
-            // previewTotalHeight/applyPreviewHeight-style logic below) rather
-            // than fixed in CSS, so it can grow when the node itself is
-            // resized bigger -- previewImg/cropCanvas just track it via
-            // height:100%.
+            // previewBox is a flex child of previewWrap (below) and grows to
+            // fill whatever space ComfyUI gives the DOM widget as a whole --
+            // see the addDOMWidget call for why that's a plain CSS fill
+            // rather than anything computed by hand (an earlier version of
+            // this tried to compute "available height" in an onResize hook
+            // and caused the node to grow without bound -- ComfyUI's own
+            // internal widget-arrangement code already does this via flexbox-
+            // style min/max distribution, and fighting it by deriving a new
+            // height from the node's current height every layout pass is
+            // exactly what created the feedback loop).
             const previewBox = document.createElement("div");
-            previewBox.style.cssText = "position:relative; width:100%; display:none;";
-            previewBox.style.height = (DEFAULT_PREVIEW_HEIGHT - DIMS_LABEL_HEIGHT) + "px";
+            previewBox.style.cssText = "position:relative; width:100%; flex:1 1 auto; min-height:0; display:none;";
             previewBox.appendChild(previewImg);
             previewBox.appendChild(cropCanvas);
 
@@ -108,7 +111,7 @@ app.registerExtension({
                 "color:#aaa; margin-top:2px; display:none;";
 
             const previewWrap = document.createElement("div");
-            previewWrap.style.cssText = "width:100%;";
+            previewWrap.style.cssText = "display:flex; flex-direction:column; width:100%; height:100%;";
             previewWrap.appendChild(previewBox);
             previewWrap.appendChild(dimsLabel);
             // Not added to the node yet -- see the "Sort By" widget below,
@@ -120,7 +123,6 @@ app.registerExtension({
             let origHeight = null;
             let lastPreviewFilename = node.widgets?.find((w) => w.name === "filename")?.value ?? null;
             let dragState = null;
-            let previewTotalHeight = DEFAULT_PREVIEW_HEIGHT;
 
             function getCropWidget() {
                 return node.widgets?.find((w) => w.name === "crop_rect");
@@ -426,59 +428,20 @@ app.registerExtension({
                 serialize: false,
             });
 
-            // getMinHeight/getMaxHeight/getHeight are read fresh on every
-            // layout pass (ComfyUI's DOMWidget.computeLayoutSize calls them,
-            // not just once at creation), so returning previewTotalHeight
-            // here is what actually lets the preview grow when the node is
-            // resized -- see the onResize hook below, which is what updates
-            // previewTotalHeight and keeps LiteGraph's own size bookkeeping
-            // in sync. Pattern confirmed against a real working example:
-            // comfyui-kjnodes/web/js/hdr_preview.js.
-            const previewWidget = node.addDOMWidget("image_preview", "preview", previewWrap, {
+            // Only getMinHeight is set -- deliberately NOT getMaxHeight/getHeight.
+            // ComfyUI's own widget-arrangement code (LGraphNode._arrangeWidgets,
+            // confirmed by reading the real frontend source) treats an omitted
+            // getMaxHeight as unbounded and gives this widget ALL of the node's
+            // remaining height automatically on every layout pass -- no onResize
+            // hook, no manual height arithmetic, and critically no write-back to
+            // node.size, so there's nothing for a feedback loop to form around.
+            // This is the same idiom comfyui-kjnodes' image_transform.js and
+            // comfy-mtb's note_plus.js use for their own flexible DOM widgets.
+            node.addDOMWidget("image_preview", "preview", previewWrap, {
                 serialize: false,
-                getMinHeight: () => previewTotalHeight,
-                getMaxHeight: () => previewTotalHeight,
-                getHeight: () => previewTotalHeight,
+                getMinHeight: () => DEFAULT_PREVIEW_HEIGHT,
             });
             node.resizable = true;
-
-            // LiteGraph's own computeSize ignores DOM widgets, so the node's
-            // real total height has to be reconstructed by hand from its
-            // other (native) widgets' own heights plus whatever's reserved
-            // for the preview -- summed per-widget (via each widget's own
-            // computeSize) rather than assumed-uniform, since crop_rect's
-            // computeSize collapses it to near-zero height above.
-            const ROW_H = LiteGraph?.NODE_WIDGET_HEIGHT ?? 20;
-            const TITLE_H = LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
-            function otherWidgetsHeight(width) {
-                let total = 0;
-                for (const w of node.widgets || []) {
-                    if (w === previewWidget) continue;
-                    const h = w.computeSize ? w.computeSize(width)[1] : ROW_H;
-                    total += Math.max(0, h) + 4;
-                }
-                return total;
-            }
-            function computeNodeHeight() {
-                return TITLE_H + otherWidgetsHeight(node.size[0]) + previewTotalHeight + 8;
-            }
-
-            let resizingPreview = false;
-            const origOnResize = node.onResize;
-            node.onResize = function (size) {
-                origOnResize?.apply(this, arguments);
-                if (resizingPreview) return;
-                resizingPreview = true;
-                try {
-                    const available = size[1] - TITLE_H - otherWidgetsHeight(size[0]) - 8;
-                    previewTotalHeight = Math.max(DEFAULT_PREVIEW_HEIGHT, available);
-                    previewBox.style.height = Math.max(40, previewTotalHeight - DIMS_LABEL_HEIGHT) + "px";
-                    node.setSize([size[0], computeNodeHeight()]);
-                    node.graph?.setDirtyCanvas(true, true);
-                } finally {
-                    resizingPreview = false;
-                }
-            };
 
             // crop_rect IS a real Python input (image_hub.py applies it at load
             // time), but it's driven entirely by dragging on the preview above,
